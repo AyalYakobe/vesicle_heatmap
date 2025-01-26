@@ -1,52 +1,63 @@
+from skimage.filters.thresholding import threshold_otsu
+from skimage.measure import find_contours
+from scipy.ndimage import label
+import matplotlib.pyplot as plt
 import numpy as np
-import pyvista as pv
-from skimage.measure import label
-from scripts.vesicle_load_tensor_files import load_data, calculate_distance_transform
 
-scaling_factors = np.array([30, 8, 8])
+def compute_max_outline(neuron_data):
+    neuron_projection = neuron_data.max(axis=0)
+    thresh = threshold_otsu(neuron_projection)
+    binary_neuron = neuron_projection > thresh
+    return binary_neuron
 
+def project_vesicles_to_2d(vesicle_data):
+    projected_vesicle_data = vesicle_data.max(axis=0)
+    labeled_vesicle_data, num_vesicles = label(projected_vesicle_data)
+    print(f"Total vesicles after projection: {num_vesicles}")
+    return projected_vesicle_data, labeled_vesicle_data
 
-def create_surface_mesh(positions):
-    point_cloud = pv.PolyData(positions.astype(np.float32) * scaling_factors)
-    if not point_cloud.points.any():
-        return None
-    return point_cloud.delaunay_2d()
+def compute_vesicle_density(vesicle_data):
+    vesicle_density = vesicle_data.sum(axis=0)
+    return vesicle_density
 
+def normalize_density(density):
+    density_min = np.min(density)
+    density_max = np.max(density)
+    normalized_density = (density - density_min) / (density_max - density_min)
+    return normalized_density
 
-def create_density_heatmap(vesicle_data, scaling_factors):
-    vesicle_coords = np.column_stack(np.nonzero(vesicle_data))
-    scaled_positions = vesicle_coords.astype(np.float32) * scaling_factors
-    density, edges = np.histogramdd(scaled_positions, bins=(100, 100, 100))
-    grid_x, grid_y, grid_z = np.meshgrid(
-        edges[0][:-1], edges[1][:-1], edges[2][:-1], indexing='ij'
+def display_neuron(neuron_data, vesicle_data=None):
+    max_neuron_outline = compute_max_outline(neuron_data)
+    vesicle_density = compute_vesicle_density(vesicle_data)
+    vesicle_density_normalized = normalize_density(vesicle_density)
+    heatmap_within_neuron = vesicle_density_normalized * max_neuron_outline
+    display_image = np.ones_like(max_neuron_outline, dtype=np.float32)
+
+    neuron_contours = find_contours(max_neuron_outline, level=0.5)
+    for contour in neuron_contours:
+        for coord in contour:
+            y, x = coord.astype(int)
+            display_image[y, x] = 0
+
+    fig, ax = plt.subplots(figsize=(8, 8))
+    ax.set_xlim(0, neuron_data.shape[2])
+    ax.set_ylim(neuron_data.shape[1], 0)
+    ax.axis("off")
+    ax.imshow(display_image, cmap="gray", interpolation="nearest")
+    ax.imshow(
+        np.ma.masked_where(max_neuron_outline == 0, heatmap_within_neuron),
+        cmap="viridis",
+        interpolation="nearest",
+        alpha=0.7,
+        extent=[0, neuron_data.shape[2], neuron_data.shape[1], 0],
     )
-    points = np.column_stack([grid_x.ravel(), grid_y.ravel(), grid_z.ravel()])
-    density_values = density.ravel()
-    nonzero_mask = density_values > 0
-    points = points[nonzero_mask]
-    density_values = density_values[nonzero_mask]
-    point_cloud = pv.PolyData(points)
-    point_cloud['Density'] = density_values
-    return point_cloud
-
-
-def visualize_data(neuron_mesh, vesicle_density_mesh):
-    plotter = pv.Plotter()
-    plotter.add_mesh(neuron_mesh, color='white', style='wireframe', opacity=0.001)
-    plotter.add_mesh(vesicle_density_mesh, scalars='Density', cmap='hot', style='wireframe', opacity=1.0)
-    plotter.add_axes()
-    plotter.show_grid()
-    plotter.set_scale(zscale=0.001, xscale=0.001, yscale=0.001)
-    plotter.show_grid(xlabel='X axis (10 microns)', ylabel='Y axis (10 microns)', zlabel='Z axis (10 microns)')
-    plotter.show()
-
-
-def load_calculate_and_visualize_neuron_and_vesicles(neuron_file_path, vesicle_file_path):
-    neuron_data, vesicle_data = load_data(neuron_file_path, vesicle_file_path)
-    labeled_vesicles, num_vesicles = label(vesicle_data, return_num=True)
-    neuron_positions = np.column_stack(np.nonzero(neuron_data))
-    neuron_mesh = create_surface_mesh(neuron_positions)
-    vesicle_density_mesh = create_density_heatmap(vesicle_data, scaling_factors)
-    visualize_data(neuron_mesh, vesicle_density_mesh)
-    print("Number of vesicle objects:", num_vesicles)
-    print(np.percentile(calculate_distance_transform(neuron_data), [10, 50, 90]))
+    cbar = plt.colorbar(ax.imshow(
+        np.ma.masked_where(max_neuron_outline == 0, heatmap_within_neuron),
+        cmap="viridis",
+        interpolation="nearest",
+        alpha=0.7,
+        extent=[0, neuron_data.shape[2], neuron_data.shape[1], 0],
+    ), ax=ax, shrink=0.7)
+    cbar.set_label("Normalized Vesicle Density", fontsize=12)
+    plt.title("Neuron with Black Outline and Heatmap Restricted Inside")
+    plt.show()
